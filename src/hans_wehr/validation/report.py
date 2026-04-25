@@ -27,14 +27,14 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from src.db.queries import (
+from hans_wehr.db.queries import (
     get_connection,
     count_roots,
     count_entries,
     count_needs_review,
     count_unresolved_xrefs,
 )
-from src.validation.root_count import EXPECTED_ROOTS, EXPECTED_ENTRIES, ROOT_TOLERANCE, ENTRY_TOLERANCE
+from hans_wehr.validation.root_count import EXPECTED_ROOTS, EXPECTED_ENTRIES, ROOT_TOLERANCE, ENTRY_TOLERANCE
 
 app = typer.Typer(help="Generate a full accuracy report for the parsed dictionary database.")
 console = Console()

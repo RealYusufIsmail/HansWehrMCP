@@ -38,7 +38,7 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.table import Table
 
-from src.db.queries import strip_diacritics
+from hans_wehr.db.queries import strip_diacritics
 
 app = typer.Typer(help="Resolve cross-references in the dictionary database (post-import step).")
 console = Console()

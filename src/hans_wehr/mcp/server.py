@@ -38,7 +38,7 @@ import mcp.types as types
 from dotenv import load_dotenv
 from mcp.server import Server
 
-from src.db.queries import (
+from hans_wehr.db.queries import (
     get_connection,
     get_entry_by_id,
     get_entries_for_root,

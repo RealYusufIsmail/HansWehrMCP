@@ -25,7 +25,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from src.db.queries import get_connection, get_random_entries, parse_plural_forms
+from hans_wehr.db.queries import get_connection, get_random_entries, parse_plural_forms
 
 app = typer.Typer(help="Sample random entries and compare against PDF pages.")
 console = Console()

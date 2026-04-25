@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-SCHEMA_PATH = Path(__file__).parent.parent / "src" / "db" / "schema.sql"
+SCHEMA_PATH = Path(__file__).parent.parent / "src" / "hans_wehr" / "db" / "schema.sql"
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ def _build_in_memory_db() -> sqlite3.Connection:
 def patch_db(monkeypatch):
     """Replace _db() with a factory that returns the in-memory test DB."""
     db = _build_in_memory_db()
-    monkeypatch.setattr("src.mcp.server._db", lambda: db)
+    monkeypatch.setattr("hans_wehr.mcp.server._db", lambda: db)
     yield db
     db.close()
 
@@ -94,7 +94,7 @@ def patch_db(monkeypatch):
 # Import dispatch functions after patching
 # ---------------------------------------------------------------------------
 
-from src.mcp.server import (  # noqa: E402
+from hans_wehr.mcp.server import (  # noqa: E402
     _dispatch,
     _not_found_response,
 )

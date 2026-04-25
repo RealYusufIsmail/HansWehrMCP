@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.pipeline.parser import (
+from hans_wehr.pipeline.parser import (
     ParsedEntry,
     RawSpan,
     _extract_plurals,

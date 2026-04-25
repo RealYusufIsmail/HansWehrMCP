@@ -26,7 +26,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from src.db.queries import (
+from hans_wehr.db.queries import (
     get_connection,
     count_roots,
     count_entries,

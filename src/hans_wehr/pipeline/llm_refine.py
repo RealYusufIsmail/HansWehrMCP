@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -349,8 +350,6 @@ def _print_cost_table(cost: dict) -> None:
 # ---------------------------------------------------------------------------
 # Main refinement logic
 # ---------------------------------------------------------------------------
-
-import re  # noqa: E402 (imported again for _parse_llm_response — already imported above)
 
 
 def refine_entries(

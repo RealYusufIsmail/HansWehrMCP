@@ -38,7 +38,7 @@ app = typer.Typer(help="Import parsed entries into SQLite.")
 console = Console()
 log = logging.getLogger(__name__)
 
-SCHEMA_PATH = Path(__file__).parent.parent / "src" / "db" / "schema.sql"
+SCHEMA_PATH = Path(__file__).parent.parent / "src" / "hans_wehr" / "db" / "schema.sql"
 DEFAULT_INPUT = Path("data/processed/entries_refined.jsonl")
 FALLBACK_INPUT = Path("data/processed/entries.jsonl")
 DEFAULT_DB = Path("data/hans_wehr.db")

@@ -51,7 +51,10 @@ hans-validate = "hans_wehr.validation.report:app"
 hans-mcp      = "hans_wehr.mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hans_wehr"]
+# hans_wehr is the installable library package.
+# scripts/ is included so its CLI entry points (hans-import, hans-probe, etc.)
+# are importable when the wheel is installed.
+packages = ["src/hans_wehr", "scripts"]
 
 # ---------------------------------------------------------------------------
 # uv configuration
@@ -94,3 +97,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "--tb=short -q"
+# "src" makes `hans_wehr` importable without a full install.
+# "."  makes `scripts` importable (needed by test_mcp_server monkeypatching).
+pythonpath = ["src", "."]

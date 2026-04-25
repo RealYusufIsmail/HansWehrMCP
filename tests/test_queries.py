@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from src.db.queries import (
+from hans_wehr.db.queries import (
     count_entries,
     count_needs_review,
     count_roots,
@@ -29,7 +29,7 @@ from src.db.queries import (
     strip_diacritics,
 )
 
-SCHEMA_PATH = Path(__file__).parent.parent / "src" / "db" / "schema.sql"
+SCHEMA_PATH = Path(__file__).parent.parent / "src" / "hans_wehr" / "db" / "schema.sql"
 
 
 # ---------------------------------------------------------------------------
