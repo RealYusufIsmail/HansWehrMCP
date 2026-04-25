@@ -1,0 +1,534 @@
+"""
+src/pipeline/parser.py
+----------------------
+Stage 2 of the pipeline: parse per-page JSON (from extract.py) into
+structured entry dicts.
+
+Structural detection uses font size and boldness:
+  - Root headword   : bold + large font (typically ≥ 11 pt in Hans Wehr)
+  - Derived form    : bold + smaller font (typically 9–10.5 pt)
+  - Definition text : regular weight, same or smaller size
+  - POS tags        : italic spans within the definition line
+
+Each parsed entry dict has the shape:
+
+{
+  "root_arabic":       "كَتَبَ",
+  "root_unvoweled":    "كتب",
+  "root_translit":     "kataba",
+  "root_page":         42,
+  "arabic":            "كِتَابٌ",
+  "arabic_unvoweled":  "كتاب",
+  "transliteration":   "kitāb",
+  "part_of_speech":    "noun",
+  "verb_form":         null,
+  "plural_forms":      ["كُتُب"],
+  "definition":        "book; letter…",
+  "grammar_notes":     null,
+  "page_number":       42,
+  "confidence":        0.92,
+  "needs_review":      false,
+  "raw_text":          "<verbatim span text>",
+  "warnings":          []
+}
+
+Usage:
+  python -m src.pipeline.parser --raw data/raw/ --out data/processed/entries.jsonl
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import unicodedata
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Iterator
+
+import typer
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
+app = typer.Typer(help="Parse raw extracted JSON into structured dictionary entries.")
+console = Console()
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Font detection thresholds
+# Adjust these after inspecting a sample of extracted pages.
+# ---------------------------------------------------------------------------
+ROOT_FONT_SIZE_MIN = 10.5    # pt — root headwords are in a larger font
+DERIVED_FONT_SIZE_MIN = 8.5  # pt — derived forms in medium bold
+SMALL_FONT_SIZE_MAX = 8.4    # pt — superscripts, footnotes (skip)
+
+# ---------------------------------------------------------------------------
+# Arabic diacritics stripping
+# ---------------------------------------------------------------------------
+_DIACRITIC_RE = re.compile(r"[\u064B-\u065F\u0670]")
+
+
+def strip_diacritics(text: str) -> str:
+    return _DIACRITIC_RE.sub("", text)
+
+
+# ---------------------------------------------------------------------------
+# Transliteration extraction
+# Transliteration appears right after the Arabic headword, typically in the
+# same span or the next non-Arabic span, in a Latin script.
+# ---------------------------------------------------------------------------
+_ARABIC_RE = re.compile(r"[\u0600-\u06FF]")
+
+
+def is_arabic_text(text: str) -> bool:
+    """True if the text contains Arabic characters."""
+    return bool(_ARABIC_RE.search(text))
+
+
+def is_latin_text(text: str) -> bool:
+    """True if text is predominantly Latin (used to detect transliteration)."""
+    if not text.strip():
+        return False
+    latin_chars = sum(1 for c in text if "LATIN" in unicodedata.name(c, "") or c.isascii())
+    return latin_chars / max(len(text.strip()), 1) > 0.5
+
+
+# ---------------------------------------------------------------------------
+# Part-of-speech detection
+# Hans Wehr uses abbreviated POS tags in italic, e.g.:
+#   n., v., adj., adv., prep., conj., interj., pron.
+# ---------------------------------------------------------------------------
+_POS_MAP: dict[str, str] = {
+    "n.": "noun",
+    "vn.": "noun",       # verbal noun
+    "v.": "verb",
+    "adj.": "adjective",
+    "adv.": "adverb",
+    "prep.": "particle",
+    "conj.": "particle",
+    "interj.": "particle",
+    "pron.": "particle",
+    "num.": "noun",
+    "prop.n.": "proper_noun",
+}
+
+_POS_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _POS_MAP) + r")\b",
+    re.IGNORECASE,
+)
+
+# Verb form pattern — Roman numerals I–X possibly with subforms (e.g. "II.", "IV")
+_VERB_FORM_RE = re.compile(r"\b(X{0,1}(?:IX|IV|V?I{0,3}))\.?\b")
+
+# Plural bracket pattern — e.g. "(pl. كُتُب)" or "(~ات)"
+_PLURAL_RE = re.compile(r"\(pl\.\s*(.*?)\)", re.UNICODE)
+
+# Cross-reference markers
+_XREF_RE = re.compile(r"(?:see|cf\.?|→)\s+([\u0600-\u06FF\s]+)", re.UNICODE)
+
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RawSpan:
+    text: str
+    size: float
+    is_bold: bool
+    is_italic: bool
+    font: str
+    bbox: list[float]
+
+
+@dataclass
+class ParsedEntry:
+    root_arabic: str
+    root_unvoweled: str
+    root_translit: str
+    root_page: int
+    arabic: str
+    arabic_unvoweled: str
+    transliteration: str
+    part_of_speech: str | None
+    verb_form: str | None
+    plural_forms: list[str]
+    definition: str
+    grammar_notes: str | None
+    page_number: int
+    confidence: float
+    needs_review: bool
+    raw_text: str
+    warnings: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+# ---------------------------------------------------------------------------
+# Confidence scoring
+# ---------------------------------------------------------------------------
+
+def compute_confidence(entry: ParsedEntry) -> float:
+    """
+    Start at 1.0 and subtract for each detected quality issue.
+    The final score is clamped to [0.0, 1.0].
+    """
+    score = 1.0
+
+    if not entry.transliteration:
+        score -= 0.15
+        if "no_transliteration" not in entry.warnings:
+            entry.warnings.append("no_transliteration")
+
+    if not entry.part_of_speech:
+        score -= 0.10
+        if "no_pos_tag" not in entry.warnings:
+            entry.warnings.append("no_pos_tag")
+
+    if not entry.arabic or not is_arabic_text(entry.arabic):
+        score -= 0.20
+        entry.warnings.append("no_arabic_text")
+
+    if not entry.definition or len(entry.definition.strip()) < 3:
+        score -= 0.20
+        entry.warnings.append("empty_definition")
+
+    # Check for garbled Unicode (replacement characters)
+    if "\uFFFD" in entry.raw_text:
+        score -= 0.10
+        entry.warnings.append("unicode_replacement_char")
+
+    # Unrecognised unicode planes beyond Arabic, Latin, common punctuation
+    for char in entry.arabic:
+        cp = ord(char)
+        if not (0x0000 <= cp <= 0x007F or 0x0600 <= cp <= 0x06FF or
+                0x064B <= cp <= 0x065F or 0x0020 <= cp <= 0x002F):
+            score -= 0.05
+            entry.warnings.append("unexpected_unicode_in_arabic")
+            break
+
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+# ---------------------------------------------------------------------------
+# Core parsing logic
+# ---------------------------------------------------------------------------
+
+def _collect_spans(page_data: dict) -> list[RawSpan]:
+    """Flatten all text spans from a page dict into an ordered list."""
+    spans: list[RawSpan] = []
+    for block in page_data.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                if span.get("text", "").strip():
+                    spans.append(RawSpan(
+                        text=span["text"],
+                        size=span.get("size", 0.0),
+                        is_bold=span.get("is_bold", False),
+                        is_italic=span.get("is_italic", False),
+                        font=span.get("font", ""),
+                        bbox=span.get("bbox", [0, 0, 0, 0]),
+                    ))
+    return spans
+
+
+def _is_root_span(span: RawSpan) -> bool:
+    """Heuristic: root headword spans are bold AND above the root size threshold."""
+    return span.is_bold and span.size >= ROOT_FONT_SIZE_MIN and is_arabic_text(span.text)
+
+
+def _is_derived_span(span: RawSpan) -> bool:
+    """Heuristic: derived form spans are bold but smaller than root headwords."""
+    return (
+        span.is_bold
+        and DERIVED_FONT_SIZE_MIN <= span.size < ROOT_FONT_SIZE_MIN
+        and is_arabic_text(span.text)
+    )
+
+
+def _extract_verb_form(text: str) -> str | None:
+    """Extract Roman numeral verb form from a text fragment."""
+    m = _VERB_FORM_RE.search(text)
+    if m:
+        form = m.group(1)
+        # Sanity check: Hans Wehr uses I–X; reject noise matches
+        try:
+            val = _roman_to_int(form)
+            if 1 <= val <= 10:
+                return form
+        except ValueError:
+            pass
+    return None
+
+
+def _roman_to_int(s: str) -> int:
+    """Convert Roman numeral string to integer. Raises ValueError if invalid."""
+    vals = {"I": 1, "V": 5, "X": 10}
+    result = 0
+    prev = 0
+    for ch in reversed(s.upper()):
+        if ch not in vals:
+            raise ValueError(f"Invalid Roman numeral character: {ch!r}")
+        v = vals[ch]
+        result += v if v >= prev else -v
+        prev = v
+    if result <= 0:
+        raise ValueError("Non-positive Roman numeral")
+    return result
+
+
+def _extract_plurals(text: str) -> list[str]:
+    """Extract plural forms from "(pl. X, Y)" patterns."""
+    plurals: list[str] = []
+    for m in _PLURAL_RE.finditer(text):
+        raw = m.group(1)
+        # Multiple plurals may be comma-separated
+        for part in raw.split(","):
+            p = part.strip()
+            if p and is_arabic_text(p):
+                plurals.append(strip_diacritics(p))  # store unvoweled
+    return plurals
+
+
+def _extract_pos(spans: list[RawSpan]) -> str | None:
+    """Find POS tag in italic spans."""
+    for span in spans:
+        if span.is_italic:
+            m = _POS_RE.search(span.text)
+            if m:
+                return _POS_MAP.get(m.group(1).lower())
+    # Fall back to scanning definition text
+    for span in spans:
+        m = _POS_RE.search(span.text)
+        if m:
+            return _POS_MAP.get(m.group(1).lower())
+    return None
+
+
+def _extract_xrefs(text: str) -> list[dict]:
+    """Find cross-reference markers in text, return list of xref dicts."""
+    xrefs = []
+    for m in _XREF_RE.finditer(text):
+        target = m.group(1).strip()
+        ref_type = "cf" if "cf" in m.group(0) else "see"
+        xrefs.append({"to_arabic_raw": target, "ref_type": ref_type})
+    return xrefs
+
+
+def _spans_to_text(spans: list[RawSpan]) -> str:
+    """Concatenate span texts with a single space."""
+    return " ".join(s.text for s in spans).strip()
+
+
+def parse_page(page_data: dict) -> Iterator[dict]:
+    """
+    Parse one page's span list into an iterator of entry dicts.
+
+    State machine:
+      SEEKING_ROOT → found a root span → READING_ENTRIES
+      READING_ENTRIES → found another root → SEEKING_ROOT (emit accumulated entries)
+                      → found derived span → emit previous entry, start new
+                      → regular span → accumulate into current entry's definition
+    """
+    page_number: int = page_data["page_number"]
+    spans = _collect_spans(page_data)
+
+    current_root: dict | None = None
+    current_entry_arabic: str = ""
+    current_entry_arabic_unvoweled: str = ""
+    current_entry_translit: str = ""
+    current_entry_spans: list[RawSpan] = []
+
+    def _flush_entry() -> dict | None:
+        """Build a ParsedEntry from current accumulation state and return its dict."""
+        nonlocal current_entry_arabic, current_entry_arabic_unvoweled
+        nonlocal current_entry_translit, current_entry_spans
+
+        if not current_root or not current_entry_arabic:
+            return None
+
+        raw_text = _spans_to_text(current_entry_spans)
+        definition_spans = [s for s in current_entry_spans if not (s.is_bold and is_arabic_text(s.text))]
+        definition = _spans_to_text(definition_spans)
+
+        # Clean definition: remove the arabic + transliteration preamble
+        if current_entry_translit and definition.startswith(current_entry_translit):
+            definition = definition[len(current_entry_translit):].lstrip(" ,;")
+
+        pos = _extract_pos(current_entry_spans)
+        verb_form = _extract_verb_form(raw_text)
+        plurals = _extract_plurals(raw_text)
+        xrefs = _extract_xrefs(raw_text)
+
+        entry = ParsedEntry(
+            root_arabic=current_root["arabic"],
+            root_unvoweled=current_root["arabic_unvoweled"],
+            root_translit=current_root["transliteration"],
+            root_page=current_root["page_number"],
+            arabic=current_entry_arabic,
+            arabic_unvoweled=current_entry_arabic_unvoweled,
+            transliteration=current_entry_translit,
+            part_of_speech=pos,
+            verb_form=verb_form,
+            plural_forms=plurals,
+            definition=definition.strip() or raw_text.strip(),
+            grammar_notes=None,
+            page_number=page_number,
+            confidence=1.0,  # will be recomputed
+            needs_review=False,
+            raw_text=raw_text,
+            warnings=[],
+        )
+
+        # Cross-references stored as a separate key (not in ParsedEntry dataclass)
+        result = entry.to_dict()
+        result["cross_references"] = xrefs
+
+        # Score
+        result["confidence"] = compute_confidence(entry)
+        result["needs_review"] = result["confidence"] < 0.75
+
+        # Reset accumulators
+        current_entry_arabic = ""
+        current_entry_arabic_unvoweled = ""
+        current_entry_translit = ""
+        current_entry_spans = []
+
+        return result
+
+    for span in spans:
+        if _is_root_span(span):
+            # Flush any pending entry before starting new root
+            e = _flush_entry()
+            if e:
+                yield e
+
+            # Also emit a stub for the root itself (root = first entry under it)
+            arabic = span.text.strip()
+            current_root = {
+                "arabic": arabic,
+                "arabic_unvoweled": strip_diacritics(arabic),
+                "transliteration": "",    # filled from the next Latin span
+                "page_number": page_number,
+            }
+            current_entry_arabic = arabic
+            current_entry_arabic_unvoweled = strip_diacritics(arabic)
+            current_entry_spans = [span]
+
+        elif _is_derived_span(span):
+            e = _flush_entry()
+            if e:
+                yield e
+
+            arabic = span.text.strip()
+            current_entry_arabic = arabic
+            current_entry_arabic_unvoweled = strip_diacritics(arabic)
+            current_entry_spans = [span]
+
+        else:
+            # Accumulate into current entry
+            if current_root is None:
+                # Haven't seen any root yet on this page; skip
+                continue
+
+            current_entry_spans.append(span)
+
+            # Opportunistically capture transliteration from the first Latin span
+            # that follows an Arabic headword
+            if (not current_entry_translit and is_latin_text(span.text)
+                    and not span.is_bold and current_entry_arabic):
+                # Take up to the first comma/semicolon/newline as transliteration
+                candidate = re.split(r"[,;(]", span.text)[0].strip()
+                if candidate and not is_arabic_text(candidate):
+                    current_entry_translit = candidate
+                    # Also propagate to root if we're on the first root span
+                    if current_root and not current_root["transliteration"]:
+                        current_root["transliteration"] = candidate
+
+    # Flush the last pending entry on the page
+    e = _flush_entry()
+    if e:
+        yield e
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+@app.command()
+def main(
+    raw: Path = typer.Option(
+        Path("data/raw"),
+        "--raw",
+        help="Directory containing per-page JSON files from extract.py.",
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+    ),
+    out: Path = typer.Option(
+        Path("data/processed/entries.jsonl"),
+        "--out", "-o",
+        help="Output JSONL file (one entry dict per line).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Parse only the first 20 pages (same range as extract.py --dry-run).",
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Parse raw per-page JSON into structured dictionary entries (JSONL output)."""
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
+    page_files = sorted(raw.glob("page_*.json"))
+    if dry_run:
+        page_files = page_files[:20]
+        console.print("[yellow]Dry-run:[/yellow] parsing first 20 pages only.")
+
+    if not page_files:
+        console.print(f"[bold red]Error:[/bold red] No page_*.json files found in {raw}")
+        raise typer.Exit(2)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    total_entries = 0
+    low_confidence = 0
+
+    with out.open("w", encoding="utf-8") as fh:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Parsing pages", total=len(page_files))
+
+            for page_file in page_files:
+                try:
+                    page_data = json.loads(page_file.read_text(encoding="utf-8"))
+                except json.JSONDecodeError as exc:
+                    log.error("Failed to load %s: %s", page_file, exc)
+                    progress.advance(task)
+                    continue
+
+                for entry in parse_page(page_data):
+                    fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    total_entries += 1
+                    if entry.get("needs_review"):
+                        low_confidence += 1
+
+                progress.advance(task)
+
+    console.print(
+        f"[green]Done.[/green] {total_entries} entries written to {out}. "
+        f"{low_confidence} flagged needs_review."
+    )
+
+
+if __name__ == "__main__":
+    app()

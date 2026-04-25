@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hans-wehr-mcp"
+version = "0.1.0"
+description = "MCP server exposing the Hans Wehr Arabic-English Dictionary as queryable tools"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    # MCP server framework
+    "mcp>=1.0.0",
+    # PDF extraction with full font metadata
+    "PyMuPDF>=1.24.0",
+    # Anthropic API for LLM refinement pass
+    "anthropic>=0.40.0",
+    # SQLite ORM / query helpers
+    "sqlite-utils>=3.37",
+    # Terminal output formatting
+    "rich>=13.0.0",
+    # CLI command framework
+    "typer>=0.12.0",
+    # Environment variable loading
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+# Main pipeline commands
+hans-extract  = "hans_wehr.pipeline.extract:app"
+hans-parse    = "hans_wehr.pipeline.parser:app"
+hans-refine   = "hans_wehr.pipeline.llm_refine:app"
+hans-import   = "scripts.import_db:app"
+hans-validate = "hans_wehr.validation.report:app"
+# MCP server entry point
+hans-mcp      = "hans_wehr.mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hans_wehr"]
+
+# ---------------------------------------------------------------------------
+# uv configuration
+# ---------------------------------------------------------------------------
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff linter / formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]  # line length handled by formatter
+
+[tool.ruff.lint.isort]
+known-first-party = ["hans_wehr"]
+
+# ---------------------------------------------------------------------------
+# mypy type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "--tb=short -q"

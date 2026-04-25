@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments / uv
+.venv/
+venv/
+env/
+.env
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Data — raw PDF and extracted pages are never committed
+data/hans_wehr.pdf
+data/raw/
+data/processed/
+data/failed_entries.jsonl
+
+# SQLite database (generated artifact)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Keep placeholder dirs
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Type checking
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# uv lock (commit the lock file for reproducibility)
+# uv.lock  # intentionally NOT ignored — commit this
