@@ -317,7 +317,7 @@ def _call_ollama(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=600) as resp:
             body = json.loads(resp.read().decode("utf-8"))
             return body["message"]["content"]
     except urllib.error.URLError as exc:
@@ -476,6 +476,7 @@ def refine_entries(
     ollama_url: str = DEFAULT_OLLAMA_URL,
     with_images: bool = False,
     pdf_path: Path | None = None,
+    batch_size: int = BATCH_SIZE,
 ) -> None:
     if with_images and use_local:
         console.print(
@@ -544,7 +545,7 @@ def refine_entries(
     total_output_tokens = 0
     parse_method = "llm_refined_local" if use_local else "llm_refined"
 
-    batches = [to_refine[i:i + BATCH_SIZE] for i in range(0, len(to_refine), BATCH_SIZE)]
+    batches = [to_refine[i:i + batch_size] for i in range(0, len(to_refine), batch_size)]
 
     with Progress(
         SpinnerColumn(),
@@ -673,6 +674,14 @@ def main(
         "--limit",
         help="Maximum number of entries to refine (for testing).",
     ),
+    batch_size: int = typer.Option(
+        BATCH_SIZE,
+        "--batch-size",
+        help=(
+            f"Entries per LLM call. Default: {BATCH_SIZE}. "
+            "Reduce to 1–3 with --local if Ollama times out on large batches."
+        ),
+    ),
     with_images: bool = typer.Option(
         False,
         "--with-images",
@@ -719,6 +728,7 @@ def main(
         ollama_url=ollama_url,
         with_images=with_images,
         pdf_path=pdf,
+        batch_size=batch_size,
     )
 
 
