@@ -4,6 +4,8 @@ An MCP (Model Context Protocol) server that exposes the Hans Wehr *Dictionary of
 
 Once set up, any MCP-compatible client — Claude Desktop, Continue.dev, or a custom agent — can call `lookup_root("كتب")` and get back all entries under that root, complete with definitions, verb forms, plural patterns, and source page numbers.
 
+**New here?** Follow the step-by-step walkthrough in [GUIDE.md](GUIDE.md).
+
 See [SPEC.md](SPEC.md) for the full architecture, data model, and accuracy strategy.
 
 ---
